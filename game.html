@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alaska Elk Hunt</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0f14;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Georgia', serif;
+        }
+        #gameCanvas {
+            display: block;
+            cursor: none;
+            border: 3px solid #3a6a3a;
+            box-shadow: 0 0 40px rgba(60,120,60,0.3);
+            max-width: 100vw;
+        }
+        #nav-bar {
+            width: 900px;
+            max-width: 100vw;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.65rem 1rem;
+            background: #0d1a0d;
+            border-bottom: 1px solid #2a4a2a;
+        }
+        #nav-bar .nav-brand {
+            color: #6aaa6a;
+            font-family: 'Georgia', serif;
+            font-size: 1rem;
+            font-weight: bold;
+            letter-spacing: 0.04em;
+            text-decoration: none;
+        }
+        #nav-bar ul {
+            list-style: none;
+            display: flex;
+            gap: 1.4rem;
+            margin: 0; padding: 0;
+        }
+        #nav-bar ul li a {
+            color: #8ac08a;
+            text-decoration: none;
+            font-size: 0.88rem;
+            font-family: Arial, sans-serif;
+            letter-spacing: 0.03em;
+            transition: color 0.2s;
+        }
+        #nav-bar ul li a:hover { color: #c0e8c0; }
+    </style>
+</head>
+<body>
+    <nav id="nav-bar">
+        <a class="nav-brand" href="index.html">Dane Rennaker</a>
+        <ul>
+            <li><a href="index.html">Main Site</a></li>
+            <li><a href="scratch.html">Alaska</a></li>
+            <li><a href="game.html">Elk Hunt</a></li>
+        </ul>
+    </nav>
+    <canvas id="gameCanvas" width="900" height="520"></canvas>
+
+<script>
+// =====================================================================
+//  ALASKA ELK HUNT — single-page canvas game
+// =====================================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ── State ─────────────────────────────────────────────────────────────
+let gameState  = 'menu';   // menu | playing | gameover
+let score      = 0;
+let highScore  = parseInt(localStorage.getItem('elkHuntHigh') || '0');
+let timeLeft   = 60;
+let timerRef   = null;
+let ammo       = 6;
+const MAX_AMMO = 6;
+let reloading  = false;
+let reloadTick = 0;
+const RELOAD_FRAMES = 130;
+let shots = 0, hits = 0;
+let frame = 0;
+let spawnCd = 80;
+let elk      = [];
+let effects  = [];
+let mouseX = W / 2, mouseY = H / 2;
+
+// ── Depth lanes ───────────────────────────────────────────────────────
+const LANES = [
+    { y: 288, s: 0.52, spd: 0.85 },
+    { y: 326, s: 0.72, spd: 1.15 },
+    { y: 360, s: 0.93, spd: 1.45 },
+    { y: 392, s: 1.15, spd: 1.75 },
+];
+
+// ── Pre-build background geometry ─────────────────────────────────────
+function makeMtns(count, yBase, yRand, seed) {
+    let r = seed, pts = [{ x: 0, y: H * 0.6 }];
+    for (let i = 0; i <= count; i++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff;
+        pts.push({ x: (i / count) * W, y: yBase - (r % yRand) });
+    }
+    pts.push({ x: W, y: H * 0.6 });
+    return pts;
+}
+const MTN_FAR = makeMtns(10, 220, 110, 37);
+const MTN_MID = makeMtns(8,  260, 80,  91);
+
+function makeTrees(count, baseY, minH, maxH, seed) {
+    let r = seed, trees = [];
+    for (let i = 0; i < count; i++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff; const x = r % W;
+        r = (r * 1103515245 + 12345) & 0x7fffffff; const h = minH + (r % (maxH - minH));
+        trees.push({ x, h, baseY });
+    }
+    return trees.sort((a, b) => a.x - b.x);
+}
+const TREES_FAR  = makeTrees(30, 252, 35, 65,  13);
+const TREES_NEAR = makeTrees(20, 278, 50, 90, 199);
+
+// ── Draw background ───────────────────────────────────────────────────
+function drawBG() {
+    // Sky
+    const sky = ctx.createLinearGradient(0, 0, 0, H * 0.53);
+    sky.addColorStop(0, '#0d2a45');
+    sky.addColorStop(1, '#6aaecc');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H * 0.53);
+
+    // Sun glow
+    const sun = ctx.createRadialGradient(W * 0.78, 52, 4, W * 0.78, 52, 70);
+    sun.addColorStop(0, 'rgba(255,248,180,0.95)');
+    sun.addColorStop(0.3, 'rgba(255,220,100,0.4)');
+    sun.addColorStop(1, 'rgba(255,200,80,0)');
+    ctx.fillStyle = sun;
+    ctx.beginPath(); ctx.arc(W * 0.78, 52, 70, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fffbe8';
+    ctx.beginPath(); ctx.arc(W * 0.78, 52, 22, 0, Math.PI * 2); ctx.fill();
+
+    // Far mountains
+    ctx.fillStyle = '#7a9aac';
+    poly(MTN_FAR);
+
+    // Mid mountains
+    ctx.fillStyle = '#4a6e58';
+    poly(MTN_MID);
+
+    // Far treeline
+    ctx.fillStyle = '#1e4422';
+    TREES_FAR.forEach(t => drawTree(t.x, t.baseY, t.h, 0.85));
+
+    // Ground
+    const gnd = ctx.createLinearGradient(0, 262, 0, H);
+    gnd.addColorStop(0, '#4a7235');
+    gnd.addColorStop(0.4, '#3a5e28');
+    gnd.addColorStop(1, '#2c4a1e');
+    ctx.fillStyle = gnd;
+    ctx.fillRect(0, 262, W, H - 262);
+
+    // Ground depth bands
+    for (let i = 0; i < 5; i++) {
+        ctx.fillStyle = `rgba(0,0,0,${0.04 + i * 0.015})`;
+        ctx.fillRect(0, 265 + i * 28, W, 6);
+    }
+
+    // Near treeline
+    ctx.fillStyle = '#163518';
+    TREES_NEAR.forEach(t => drawTree(t.x, t.baseY, t.h, 1));
+}
+
+function poly(pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    pts.forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.closePath(); ctx.fill();
+}
+
+function drawTree(x, baseY, h, s) {
+    ctx.fillRect(x - 2 * s, baseY, 4 * s, h * 0.18);
+    for (let tier = 0; tier < 3; tier++) {
+        const ty  = baseY - h * (0.12 + tier * 0.3);
+        const tw  = (h * 0.42) * (1 - tier * 0.22) * s;
+        const th  = h * 0.32 * s;
+        ctx.beginPath();
+        ctx.moveTo(x, ty - th);
+        ctx.lineTo(x - tw, ty);
+        ctx.lineTo(x + tw, ty);
+        ctx.closePath(); ctx.fill();
+    }
+}
+
+// ── Elk class ─────────────────────────────────────────────────────────
+class Elk {
+    constructor() {
+        const li   = Math.floor(Math.random() * LANES.length);
+        this.lane  = LANES[li];
+        this.dir   = Math.random() < 0.5 ? 1 : -1;
+        this.x     = this.dir === 1 ? -100 : W + 100;
+        this.y     = this.lane.y;
+        this.s     = this.lane.s;
+        this.spd   = this.lane.spd * (0.85 + Math.random() * 0.4) * this.dir;
+        this.type  = Math.random() < 0.28 ? 'bull' : 'cow';
+        this.pts   = this.type === 'bull' ? 3 : 1;
+        this.phase = Math.random() * Math.PI * 2;
+        this.mode  = 'walk';   // walk | graze | dying | dead
+        this.grazeTick = 0;
+        this.dyingTick = 0;
+        this.alpha = 1;
+        this.flash = 0;
+    }
+
+    update() {
+        if (this.mode === 'walk') {
+            this.x += this.spd;
+            this.phase += 0.13;
+            if (Math.random() < 0.0018) { this.mode = 'graze'; this.grazeTick = 80 + Math.random() * 100 | 0; }
+        } else if (this.mode === 'graze') {
+            this.grazeTick--;
+            if (this.grazeTick <= 0) this.mode = 'walk';
+        } else if (this.mode === 'dying') {
+            this.dyingTick++;
+            this.x += this.spd * 0.25;
+            this.alpha = Math.max(0, 1 - this.dyingTick / 55);
+            if (this.dyingTick > 55) this.mode = 'dead';
+        }
+        if (this.flash > 0) this.flash--;
+    }
+
+    gone() { return this.x < -160 || this.x > W + 160 || this.mode === 'dead'; }
+
+    hit(px, py) {
+        if (this.mode !== 'walk' && this.mode !== 'graze') return false;
+        const hw = 52 * this.s, hh = 38 * this.s;
+        return Math.abs(px - this.x) < hw && Math.abs(py - this.y) < hh;
+    }
+
+    draw() {
+        if (this.mode === 'dead') return;
+        const { x, y, s, dir: d, type, mode, phase, alpha, flash } = this;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+
+        // hit flash — white overlay drawn last
+        const flashing = flash > 0 && flash % 4 < 2;
+
+        // Leg swing
+        const sw   = mode === 'graze' ? 0 : Math.sin(phase);
+        const legL = 28 * s;
+        const legY = y + 10 * s;
+
+        // Leg color
+        ctx.strokeStyle = type === 'bull' ? '#3a1a06' : '#5e3010';
+        ctx.lineWidth   = 3.5 * s;
+        ctx.lineCap     = 'round';
+
+        const bx = x - 16 * s * d; // back leg x base
+        const fx = x + 16 * s * d; // front leg x base
+
+        // Two back legs
+        this.leg(bx, legY,  sw * 11 * s, legL);
+        this.leg(bx, legY, -sw *  8 * s, legL);
+        // Two front legs
+        this.leg(fx, legY, -sw * 11 * s, legL);
+        this.leg(fx, legY,  sw *  8 * s, legL);
+
+        // Body
+        ctx.fillStyle = type === 'bull' ? '#5a2e0c' : '#8b5a2a';
+        ell(x, y, 30 * s, 15 * s);
+
+        // Rump patch (cream)
+        ctx.fillStyle = '#d4b06a';
+        ell(x - 20 * s * d, y + 2 * s, 9 * s, 7 * s);
+
+        // Neck + head positions
+        const nkX  = x + 24 * s * d;
+        const nkY  = y - 7 * s;
+        let   hdX, hdY;
+        if (mode === 'graze') {
+            hdX = nkX + 12 * s * d;
+            hdY = nkY + 12 * s;
+        } else {
+            hdX = nkX + 4 * s * d;
+            hdY = nkY - 20 * s;
+        }
+
+        // Neck (trapezoid)
+        ctx.fillStyle = type === 'bull' ? '#3e1c06' : '#6a3a18';
+        ctx.beginPath();
+        ctx.moveTo(nkX - 6 * s, nkY + 2 * s);
+        ctx.lineTo(nkX + 6 * s, nkY + 2 * s);
+        ctx.lineTo(hdX + 5 * s * d, hdY + 4 * s);
+        ctx.lineTo(hdX - 5 * s * d, hdY + 4 * s);
+        ctx.closePath(); ctx.fill();
+
+        // Head
+        ctx.fillStyle = type === 'bull' ? '#3a1806' : '#6a3818';
+        ell(hdX, hdY, 10 * s, 7 * s);
+
+        // Snout
+        ctx.fillStyle = '#c4a060';
+        ell(hdX + 8 * s * d, hdY + 1 * s, 6 * s, 4 * s);
+
+        // Eye
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.arc(hdX + 3 * s * d, hdY - 2 * s, 2.2 * s, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.beginPath(); ctx.arc(hdX + 3.8 * s * d, hdY - 2.8 * s, 0.8 * s, 0, Math.PI * 2); ctx.fill();
+
+        // Ear
+        ctx.fillStyle = '#c4a060';
+        ctx.beginPath();
+        ctx.ellipse(hdX - 2 * s * d, hdY - 6 * s, 2.5 * s, 5 * s, -0.3 * d, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Antlers — bull only
+        if (type === 'bull') {
+            ctx.strokeStyle = '#2c1004';
+            ctx.lineCap = 'round';
+            const ax = hdX + 1 * s * d, ay = hdY - 8 * s;
+            ctx.lineWidth = 3 * s;
+            line(ax, ay, ax - 4 * s * d, ay - 18 * s);
+            line(ax, ay, ax + 9 * s * d, ay - 13 * s);
+            ctx.lineWidth = 2 * s;
+            line(ax - 1 * s * d, ay - 10 * s, ax + 7 * s * d, ay - 14 * s);
+            line(ax + 5 * s * d, ay - 7 * s,  ax + 11 * s * d, ay - 15 * s);
+        }
+
+        // Dying tilt
+        if (mode === 'dying') {
+            // already fading via alpha
+        }
+
+        // Flash overlay
+        if (flashing) {
+            ctx.globalAlpha = 0.55;
+            ctx.fillStyle = '#ffffff';
+            ell(x, y - 5 * s, 35 * s, 22 * s);
+            ctx.globalAlpha = alpha;
+        }
+
+        ctx.restore();
+    }
+
+    leg(bx, by, swing, len) {
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.quadraticCurveTo(bx + swing * 0.5, by + len * 0.55, bx + swing, by + len);
+        ctx.stroke();
+    }
+}
+
+function ell(x, y, rx, ry) {
+    ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+}
+function line(x1, y1, x2, y2) {
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+}
+
+// ── Effects ───────────────────────────────────────────────────────────
+function sprayParticles(x, y, color, n) {
+    for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const v = 1.5 + Math.random() * 3.5;
+        effects.push({ kind: 'dot', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2.5,
+                        color, r: 2.5 + Math.random() * 3, life: 35 + Math.random() * 20 | 0, max: 55 });
+    }
+}
+function floatText(x, y, text, color) {
+    effects.push({ kind: 'txt', x, y, vy: -0.55, text, color, life: 65, max: 65 });
+}
+function muzzle(x, y) {
+    effects.push({ kind: 'flash', x, y, life: 7, max: 7 });
+}
+
+function updateEffects() {
+    effects = effects.filter(e => {
+        e.life--;
+        if (e.kind === 'dot') { e.x += e.vx; e.y += e.vy; e.vy += 0.18; }
+        if (e.kind === 'txt') { e.y += e.vy; }
+        return e.life > 0;
+    });
+}
+
+function drawEffects() {
+    effects.forEach(e => {
+        const a = e.life / e.max;
+        ctx.save(); ctx.globalAlpha = a;
+        if (e.kind === 'dot') {
+            ctx.fillStyle = e.color;
+            ctx.beginPath(); ctx.arc(e.x, e.y, e.r * a, 0, Math.PI * 2); ctx.fill();
+        } else if (e.kind === 'txt') {
+            ctx.font = `bold ${17 + (1 - a) * 6}px Georgia`;
+            ctx.fillStyle = e.color;
+            ctx.textAlign = 'center';
+            ctx.fillText(e.text, e.x, e.y);
+        } else if (e.kind === 'flash') {
+            const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, 45);
+            g.addColorStop(0, 'rgba(255,255,180,0.9)');
+            g.addColorStop(1, 'transparent');
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(e.x, e.y, 45, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+    });
+}
+
+// ── UI ────────────────────────────────────────────────────────────────
+function drawUI() {
+    // Timer bar
+    const pct = timeLeft / 60;
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(10, 10, 280, 18);
+    ctx.fillStyle = pct > 0.5 ? '#4aaa4a' : pct > 0.25 ? '#ddaa00' : '#dd2200';
+    ctx.fillRect(10, 10, 280 * pct, 18);
+    ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1;
+    ctx.strokeRect(10, 10, 280, 18);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Arial'; ctx.textAlign = 'center';
+    ctx.fillText(`${timeLeft}s`, 150, 24);
+
+    // Score
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 24px Georgia'; ctx.fillStyle = '#ffd700';
+    ctx.fillText(`${score}`, W - 12, 30);
+    ctx.font = '12px Arial'; ctx.fillStyle = '#999';
+    ctx.fillText(`best: ${highScore}`, W - 12, 46);
+
+    // Ammo bullets
+    for (let i = 0; i < MAX_AMMO; i++) {
+        const bx = 14 + i * 20, by = H - 32;
+        ctx.fillStyle = i < ammo ? '#f0d055' : '#2a2a2a';
+        ctx.fillRect(bx, by, 7, 16);
+        ctx.fillStyle = i < ammo ? '#b89030' : '#1a1a1a';
+        ctx.fillRect(bx + 1, by, 5, 4);
+        ctx.strokeStyle = '#666'; ctx.lineWidth = 0.8;
+        ctx.strokeRect(bx, by, 7, 16);
+    }
+    ctx.textAlign = 'left';
+    ctx.font = '11px Arial'; ctx.fillStyle = '#aaa';
+    ctx.fillText('AMMO', 14, H - 37);
+
+    // Reload bar
+    if (reloading) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(14, H - 52, 140, 13);
+        ctx.fillStyle = '#e07820';
+        ctx.fillRect(14, H - 52, 140 * (reloadTick / RELOAD_FRAMES), 13);
+        ctx.strokeStyle = '#888'; ctx.lineWidth = 0.8;
+        ctx.strokeRect(14, H - 52, 140, 13);
+        ctx.fillStyle = '#fff'; ctx.font = '10px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('RELOADING…', 84, H - 43);
+        ctx.textAlign = 'left';
+    }
+
+    // Accuracy
+    if (shots > 0) {
+        const acc = Math.round(hits / shots * 100);
+        ctx.textAlign = 'right'; ctx.font = '12px Arial'; ctx.fillStyle = '#888';
+        ctx.fillText(`accuracy  ${acc}%`, W - 12, H - 12);
+        ctx.textAlign = 'left';
+    }
+}
+
+function drawCrosshair() {
+    const x = mouseX, y = mouseY;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+    ctx.lineWidth = 1.5;
+    const r = 20, g = 6;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - r - 10, y); ctx.lineTo(x - g, y);
+    ctx.moveTo(x + g, y);       ctx.lineTo(x + r + 10, y);
+    ctx.moveTo(x, y - r - 10); ctx.lineTo(x, y - g);
+    ctx.moveTo(x, y + g);       ctx.lineTo(x, y + r + 10);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,60,60,0.9)';
+    ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+}
+
+// ── Screens ───────────────────────────────────────────────────────────
+function drawMenu() {
+    ctx.fillStyle = 'rgba(0,0,0,0.68)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 54px Georgia'; ctx.fillStyle = '#ffd700';
+    ctx.fillText('ALASKA ELK HUNT', W / 2, H / 2 - 108);
+
+    ctx.font = '19px Georgia'; ctx.fillStyle = '#b0d8c0';
+    ctx.fillText('60 seconds. 6 shots before reload. Hunt the wilderness.', W / 2, H / 2 - 65);
+
+    ctx.font = '15px Arial'; ctx.fillStyle = '#888';
+    ctx.fillText('Move mouse to aim  ·  Click to shoot', W / 2, H / 2 - 20);
+    ctx.fillText('Cow Elk  =  1 pt     |     Bull Elk  =  3 pts', W / 2, H / 2 + 8);
+
+    if (highScore > 0) {
+        ctx.font = '17px Georgia'; ctx.fillStyle = '#ffd700';
+        ctx.fillText(`Personal Best: ${highScore}`, W / 2, H / 2 + 52);
+    }
+
+    // Start button
+    const bx = W / 2 - 105, by = H / 2 + 78;
+    ctx.fillStyle = '#3a7a3a';
+    roundRect(bx, by, 210, 50, 8); ctx.fill();
+    ctx.strokeStyle = '#6aaa6a'; ctx.lineWidth = 2;
+    roundRect(bx, by, 210, 50, 8); ctx.stroke();
+    ctx.font = 'bold 22px Georgia'; ctx.fillStyle = '#fff';
+    ctx.fillText('START HUNT', W / 2, by + 33);
+
+    ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    const newBest = score > 0 && score >= highScore;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 46px Georgia';
+    ctx.fillStyle = newBest ? '#ffd700' : '#dd4422';
+    ctx.fillText(newBest ? '🏆  NEW BEST!' : 'HUNT OVER', W / 2, H / 2 - 115);
+
+    ctx.font = 'bold 68px Georgia'; ctx.fillStyle = '#fff';
+    ctx.fillText(score, W / 2, H / 2 - 42);
+    ctx.font = '18px Georgia'; ctx.fillStyle = '#aaa';
+    ctx.fillText('points', W / 2, H / 2 - 16);
+
+    const acc = shots > 0 ? Math.round(hits / shots * 100) : 0;
+    ctx.font = '16px Arial'; ctx.fillStyle = '#ccc';
+    ctx.fillText(`Fired: ${shots}   Hits: ${hits}   Accuracy: ${acc}%`, W / 2, H / 2 + 28);
+    ctx.font = '14px Arial'; ctx.fillStyle = '#777';
+    ctx.fillText(`Personal Best: ${highScore}`, W / 2, H / 2 + 58);
+
+    // Play again button
+    const bx = W / 2 - 110, by = H / 2 + 85;
+    ctx.fillStyle = '#3a7a3a';
+    roundRect(bx, by, 220, 50, 8); ctx.fill();
+    ctx.strokeStyle = '#6aaa6a'; ctx.lineWidth = 2;
+    roundRect(bx, by, 220, 50, 8); ctx.stroke();
+    ctx.font = 'bold 22px Georgia'; ctx.fillStyle = '#fff';
+    ctx.fillText('HUNT AGAIN', W / 2, by + 33);
+
+    ctx.textAlign = 'left';
+}
+
+function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+// ── Game logic ────────────────────────────────────────────────────────
+function startGame() {
+    gameState = 'playing';
+    score = ammo = MAX_AMMO;
+    score = 0; timeLeft = 60;
+    reloading = false; reloadTick = 0;
+    shots = hits = frame = 0; spawnCd = 80;
+    elk = []; effects = [];
+    clearInterval(timerRef);
+    timerRef = setInterval(() => {
+        timeLeft--;
+        if (timeLeft <= 0) {
+            clearInterval(timerRef);
+            if (score > highScore) { highScore = score; localStorage.setItem('elkHuntHigh', highScore); }
+            gameState = 'gameover';
+        }
+    }, 1000);
+}
+
+function shoot(cx, cy) {
+    if (gameState !== 'playing' || reloading) return;
+    ammo--;
+    shots++;
+    muzzle(cx, cy);
+
+    // Check hits (closest/largest elk first)
+    const sorted = [...elk].sort((a, b) => b.s - a.s);
+    let got = false;
+    for (const e of sorted) {
+        if (e.hit(cx, cy)) {
+            e.mode = 'dying'; e.flash = 14;
+            score += e.pts; hits++;
+            sprayParticles(cx, cy, '#cc1100', 10);
+            floatText(e.x, e.y - 50 * e.s, e.type === 'bull' ? `+${e.pts} BULL!` : `+${e.pts}`, e.type === 'bull' ? '#ffd700' : '#aaffaa');
+            got = true; break;
+        }
+    }
+    if (!got) {
+        sprayParticles(cx, Math.min(cy + 30, H - 20), '#c8b050', 6);
+        floatText(cx, cy - 20, 'MISS', '#ffaaaa');
+    }
+    if (ammo <= 0) { reloading = true; reloadTick = 0; }
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────
+function loop() {
+    requestAnimationFrame(loop);
+    drawBG();
+
+    if (gameState === 'playing') {
+        frame++;
+
+        // Spawn
+        spawnCd--;
+        if (spawnCd <= 0) {
+            elk.push(new Elk());
+            spawnCd = Math.max(45, 85 - (frame / 400 | 0) * 5);
+        }
+
+        // Reload
+        if (reloading) {
+            reloadTick++;
+            if (reloadTick >= RELOAD_FRAMES) { reloading = false; ammo = MAX_AMMO; }
+        }
+
+        // Update & draw elk (sorted by y for painter's order)
+        elk.sort((a, b) => a.y - b.y);
+        elk.forEach(e => e.update());
+        elk = elk.filter(e => !e.gone());
+        elk.forEach(e => e.draw());
+
+        updateEffects(); drawEffects();
+        drawUI();
+    }
+
+    if (gameState === 'menu')     drawMenu();
+    if (gameState === 'gameover') { elk.forEach(e => e.draw()); drawEffects(); drawGameOver(); }
+
+    // Always draw crosshair on top — cursor is hidden in all states
+    drawCrosshair();
+}
+
+// ── Input ─────────────────────────────────────────────────────────────
+canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    mouseX = (e.clientX - r.left) * (W / r.width);
+    mouseY = (e.clientY - r.top)  * (H / r.height);
+});
+
+canvas.addEventListener('click', e => {
+    const r  = canvas.getBoundingClientRect();
+    const cx = (e.clientX - r.left) * (W / r.width);
+    const cy = (e.clientY - r.top)  * (H / r.height);
+
+    if (gameState === 'menu') {
+        if (cx > W/2-105 && cx < W/2+105 && cy > H/2+78 && cy < H/2+128) startGame();
+    } else if (gameState === 'gameover') {
+        if (cx > W/2-110 && cx < W/2+110 && cy > H/2+85 && cy < H/2+135) startGame();
+    } else if (gameState === 'playing') {
+        shoot(cx, cy);
+    }
+});
+
+loop();
+</script>
+</body>
+</html>
